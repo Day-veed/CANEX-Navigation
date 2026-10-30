@@ -1,9 +1,10 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useEffect, useMemo, useState } from "react";
-import { findRoute, type StepKind } from "@/lib/routing";
-import { CATEGORIES, FLOORS, floorById, footprintOf, getPlace, label, PLACES, type Category, type FloorId, type Place } from "@/lib/venue";
+import { Component, useEffect, useMemo, useState, type ReactNode } from "react";
+import { findRoute, nearest, type StepKind } from "@/lib/routing";
+import { destinations, search } from "@/lib/search";
+import { CATEGORIES, FLOORS, floorById, footprintOf, getPlace, isGate, label, type Category, type FloorId, type Place } from "@/lib/venue";
 import type { ViewMode } from "./VenueScene";
 
 const VenueScene = dynamic(() => import("./VenueScene"), {
@@ -12,7 +13,9 @@ const VenueScene = dynamic(() => import("./VenueScene"), {
 });
 
 const DEFAULT_FROM = "gate-d";
-const destinations = PLACES.filter((p) => !p.hidden);
+
+/** Option text that tells same-named places apart (e.g. the toilet blocks). */
+const optionLabel = (p: Place) => (p.category === "amenity" && p.zone ? `${p.name} · ${p.zone}` : isGate(p) ? `${p.code} · ${p.name}` : label(p));
 
 export default function Wayfinder({ initialFrom, initialTo }: { initialFrom?: string; initialTo?: string }) {
   const [fromId, setFromId] = useState(getPlace(initialFrom) && !getPlace(initialFrom)!.hidden ? initialFrom! : DEFAULT_FROM);
@@ -21,7 +24,8 @@ export default function Wayfinder({ initialFrom, initialTo }: { initialFrom?: st
   const [category, setCategory] = useState<Category | null>(null);
   const [floor, setFloor] = useState<FloorId | null>(null);
   const [view, setView] = useState<ViewMode>("3d");
-  const [showFloors, setShowFloors] = useState(false);
+  const [stacked, setStacked] = useState(false);
+  const [mapFloor, setMapFloor] = useState<FloorId>(getPlace(initialTo)?.floor ?? "G");
   const [panelOpen, setPanelOpen] = useState(true);
   const [copied, setCopied] = useState(false);
 
@@ -35,11 +39,32 @@ export default function Wayfinder({ initialFrom, initialTo }: { initialFrom?: st
     params.set("from", fromId);
     if (toId) params.set("to", toId);
     window.history.replaceState(null, "", `?${params}`);
-  }, [fromId, toId]);
+    document.title = to ? `To ${to.name} · CANEX Find Your Way` : "CANEX · Find Your Way";
+  }, [fromId, toId, to]);
 
   const choose = (id: string) => {
     setToId(id);
     setPanelOpen(true);
+    setStacked(false);
+    setMapFloor(getPlace(id)!.floor);
+  };
+
+  const chooseNearest = (test: (p: Place) => boolean) => {
+    const best = nearest(fromId, test);
+    if (best) choose(best.id);
+  };
+
+  const showFloor = (f: FloorId) => {
+    setStacked(false);
+    setMapFloor(f);
+  };
+
+  const swap = () => {
+    if (!to) return;
+    const next = to.hidden ? DEFAULT_FROM : to.id;
+    setToId(fromId);
+    setFromId(next);
+    setMapFloor(getPlace(fromId)!.floor);
   };
 
   const share = async () => {
@@ -60,24 +85,47 @@ export default function Wayfinder({ initialFrom, initialTo }: { initialFrom?: st
     <div className="relative h-dvh w-full overflow-hidden bg-[#e9eeeb] text-[#1f2d29]">
       {/* Keep the map out from under the panel so it centres in the visible area. */}
       <div className={`absolute inset-x-0 top-0 transition-[bottom] duration-300 md:bottom-0 md:left-[422px] ${panelOpen ? "bottom-[45dvh]" : "bottom-[60px]"}`}>
-        <VenueScene route={route} fromId={fromId} toId={toId} view={view} showFloors={showFloors} onSelect={choose} />
+        <MapErrorBoundary>
+          <VenueScene route={route} fromId={fromId} toId={toId} floor={mapFloor} stacked={stacked} view={view} onSelect={choose} />
+        </MapErrorBoundary>
       </div>
 
       {/* Map controls */}
       <div className="absolute right-3 top-3 z-10 flex flex-col items-end gap-2 md:right-4 md:top-4">
         <div className="flex overflow-hidden rounded-xl bg-white shadow-md ring-1 ring-black/5">
           {(["3d", "2d"] as const).map((v) => (
-            <button key={v} onClick={() => setView(v)} className={`px-3 py-2 text-sm font-semibold ${view === v ? "bg-[#1f2d29] text-white" : "text-[#3a4743] hover:bg-black/5"}`}>
+            <button key={v} onClick={() => setView(v)} aria-pressed={view === v} className={`px-3 py-2 text-sm font-semibold ${view === v ? "bg-[#1f2d29] text-white" : "text-[#3a4743] hover:bg-black/5"}`}>
               {v.toUpperCase()}
             </button>
           ))}
         </div>
-        <button
-          onClick={() => setShowFloors((s) => !s)}
-          className={`rounded-xl px-3 py-2 text-sm font-semibold shadow-md ring-1 ring-black/5 ${showFloors ? "bg-[#1f2d29] text-white" : "bg-white text-[#3a4743] hover:bg-[#f3f5f4]"}`}
-        >
-          All floors
-        </button>
+        <div className="flex flex-col overflow-hidden rounded-xl bg-white shadow-md ring-1 ring-black/5" role="group" aria-label="Floor">
+          <button
+            onClick={() => setStacked((s) => !s)}
+            aria-pressed={stacked}
+            className={`px-3 py-2 text-xs font-semibold ${stacked ? "bg-[#1f2d29] text-white" : "text-[#3a4743] hover:bg-black/5"}`}
+            title="Show every floor stacked"
+          >
+            All
+          </button>
+          {[...FLOORS].reverse().map((f) => {
+            const active = !stacked && mapFloor === f.id;
+            const onRoute = route?.floors.includes(f.id);
+            return (
+              <button
+                key={f.id}
+                onClick={() => showFloor(f.id)}
+                title={f.name}
+                aria-label={`${f.name}${onRoute ? " (on your route)" : ""}`}
+                aria-pressed={active}
+                className={`relative border-t border-black/5 px-3 py-2 text-sm font-bold ${active ? "bg-[#1f2d29] text-white" : "text-[#3a4743] hover:bg-black/5"}`}
+              >
+                {f.short}
+                {onRoute && <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-[#e8451e]" />}
+              </button>
+            );
+          })}
+        </div>
         <Legend />
       </div>
 
@@ -114,10 +162,7 @@ export default function Wayfinder({ initialFrom, initialTo }: { initialFrom?: st
                   <div className="truncate text-xs text-[#5d6d67]">{floorById(to.floor).name}{footprintOf(to).zone ? ` · ${footprintOf(to).zone}` : ""}</div>
                 </div>
                 <button
-                  onClick={() => {
-                    setToId(fromId);
-                    setFromId(to.hidden ? DEFAULT_FROM : to.id);
-                  }}
+                  onClick={swap}
                   className="rounded-lg p-1.5 text-[#3a4743] hover:bg-black/5"
                   title="Swap start and destination"
                   aria-label="Swap start and destination"
@@ -133,6 +178,11 @@ export default function Wayfinder({ initialFrom, initialTo }: { initialFrom?: st
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 onFocus={() => setPanelOpen(true)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && results[0]) choose(results[0].id);
+                }}
+                aria-label="Where do you want to go?"
+                enterKeyHint="go"
                 placeholder="Search booths, stages, food…  e.g. E21, coffee"
                 className="w-full rounded-xl border border-black/10 bg-[#f6f8f7] px-3 py-2.5 text-sm outline-none placeholder:text-[#8a9893] focus:border-[#0f7b7b]"
               />
@@ -146,13 +196,16 @@ export default function Wayfinder({ initialFrom, initialTo }: { initialFrom?: st
               <div className="mb-3 flex items-center justify-between">
                 <div>
                   <div className="text-2xl font-extrabold">{route.minutes} min</div>
-                  <div className="text-xs text-[#5d6d67]">{route.meters > 0 ? `~${route.meters} m walk · ` : ""}estimate, map not to scale</div>
+                  <div className="text-xs text-[#5d6d67]">
+                    {route.meters > 0 ? `~${route.meters} m walk` : "No walking needed"}
+                    {route.floors.length > 1 || route.to.floor !== route.from.floor ? " · uses the lifts" : ""}
+                  </div>
                 </div>
                 <button onClick={share} className="rounded-xl bg-[#0f7b7b] px-3 py-2 text-sm font-semibold text-white hover:bg-[#0c6868]">
                   {copied ? "Link copied" : "Share"}
                 </button>
               </div>
-              <ol className="relative space-y-3 before:absolute before:bottom-3 before:left-[15px] before:top-3 before:w-px before:bg-black/10">
+              <ol aria-label="Directions" className="relative space-y-3 before:absolute before:bottom-3 before:left-[15px] before:top-3 before:w-px before:bg-black/10">
                 {route.steps.map((s, i) => (
                   <li key={i} className="relative flex gap-3">
                     <span className={`z-10 grid h-8 w-8 shrink-0 place-items-center rounded-full ${s.kind === "arrive" ? "bg-[#e8451e] text-white" : s.kind === "info" ? "bg-[#fff4d6] text-[#8a6100]" : "bg-[#eef2f0] text-[#1f2d29]"}`}>
@@ -176,14 +229,24 @@ export default function Wayfinder({ initialFrom, initialTo }: { initialFrom?: st
                   </Chip>
                 ))}
               </div>
+              <div className="mb-3 grid grid-cols-2 gap-2">
+                <button onClick={() => chooseNearest((p) => p.category === "amenity")} className="rounded-xl bg-[#eef2f0] px-3 py-2 text-left text-xs font-semibold text-[#1f2d29] hover:bg-[#e2e8e5]">
+                  Nearest toilets
+                </button>
+                <button onClick={() => chooseNearest((p) => p.category === "food" && !p.id.startsWith("gate-"))} className="rounded-xl bg-[#eef2f0] px-3 py-2 text-left text-xs font-semibold text-[#1f2d29] hover:bg-[#e2e8e5]">
+                  Nearest food &amp; drink
+                </button>
+              </div>
               <div className="-mx-1 mb-3 flex gap-1.5 overflow-x-auto px-1 pb-1">
-                {(["exhibition", "food", "room", "hub", "outdoor"] as const).map((c) => (
+                {(["exhibition", "food", "venue", "amenity", "entrance"] as const).map((c) => (
                   <Chip key={c} active={category === c} onClick={() => setCategory(category === c ? null : c)}>
                     <Swatch category={c} /> {CATEGORIES[c].label}
                   </Chip>
                 ))}
               </div>
-              <p className="mb-2 text-xs text-[#5d6d67]">{results.length} places · tap the map or pick from the list</p>
+              <p className="mb-2 text-xs text-[#5d6d67]" aria-live="polite">
+                {results.length ? `${results.length} places · tap the map or pick from the list` : "No matches. Try a booth code like E21, or a name like coffee."}
+              </p>
               <ul className="divide-y divide-black/5">
                 {results.map((p) => (
                   <li key={p.id}>
@@ -204,38 +267,10 @@ export default function Wayfinder({ initialFrom, initialTo }: { initialFrom?: st
             </section>
           )}
         </div>
-        <footer className="hidden shrink-0 border-t border-black/5 px-5 py-2 text-[10px] text-[#8a9893] md:block">Schematic, not to scale. Source: venue plan V24.1</footer>
+        <footer className="hidden shrink-0 border-t border-black/5 px-5 py-2 text-[10px] text-[#8a9893] md:block">Source: CANEX V24 power layout, rev 24 (20 Oct 2026). Draft plans; distances approximate.</footer>
       </aside>
     </div>
   );
-}
-
-function search(query: string, category: Category | null, floor: FloorId | null): Place[] {
-  const q = normalize(query);
-  const tokens = q.split(" ").filter(Boolean);
-  const scored: [Place, number][] = [];
-  for (const p of destinations) {
-    if (category && p.category !== category) continue;
-    if (floor && p.floor !== floor) continue;
-    if (!tokens.length) {
-      scored.push([p, 0]);
-      continue;
-    }
-    const code = normalize(p.code ?? "");
-    const name = normalize(p.name);
-    const hay = `${code} ${name} ${normalize(p.zone ?? "")} ${normalize(CATEGORIES[p.category].label)} ${normalize(floorById(p.floor).name)}`;
-    let score = 0;
-    if (code && code === q) score = 100;
-    else if (code.startsWith(q)) score = 80;
-    else if (name.startsWith(q)) score = 60;
-    else if (tokens.every((t) => hay.includes(t))) score = 40;
-    if (score) scored.push([p, score]);
-  }
-  return scored.sort((a, b) => b[1] - a[1]).map(([p]) => p);
-}
-
-function normalize(s: string) {
-  return s.toLowerCase().replace(/&/g, " and ").replace(/[^a-z0-9]+/g, " ").trim();
 }
 
 function PlaceOptions() {
@@ -246,7 +281,7 @@ function PlaceOptions() {
       <optgroup label="Gates">
         {gates.map((p) => (
           <option key={p.id} value={p.id}>
-            {p.code} · {p.name}
+            {optionLabel(p)}
           </option>
         ))}
       </optgroup>
@@ -254,7 +289,7 @@ function PlaceOptions() {
         <optgroup key={f.id} label={f.name}>
           {items.map((p) => (
             <option key={p.id} value={p.id}>
-              {label(p)}
+              {optionLabel(p)}
             </option>
           ))}
         </optgroup>
@@ -277,7 +312,7 @@ function Chip({ active, onClick, children }: { active: boolean; onClick: () => v
 }
 
 function Swatch({ category }: { category: Category }) {
-  return <span className="inline-block h-3 w-3 shrink-0 rounded-[4px]" style={{ background: CATEGORIES[category].color }} />;
+  return <span className="inline-block h-3 w-3 shrink-0 rounded-[4px] ring-1 ring-black/10 ring-inset" style={{ background: CATEGORIES[category].color }} aria-hidden />;
 }
 
 function Legend() {
@@ -322,4 +357,25 @@ function Icon({ kind }: { kind: StepKind | "swap" | "close" }) {
       <path d={paths[kind]} />
     </svg>
   );
+}
+
+/** If WebGL isn't available the directions still work; say so instead of a blank map. */
+class MapErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return (
+      <div className="grid h-full place-items-center p-6 text-center text-sm text-[#5d6d67]">
+        <div>
+          <p className="font-semibold text-[#1f2d29]">The 3D map can&apos;t be shown on this device.</p>
+          <p className="mt-1">Search and step-by-step directions still work.</p>
+        </div>
+      </div>
+    );
+  }
 }

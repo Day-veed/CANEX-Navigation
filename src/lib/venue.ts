@@ -1,53 +1,53 @@
-// Venue data for CANEX at the Wole Soyinka Centre for Culture and Creative Arts.
-// Transcribed from the schematic "Find your way" plan (venue plan V24.1).
+// Venue data for CANEX 2026 at the Wole Soyinka Centre for Culture and Creative Arts.
 //
-// Ground-floor positions are polar: `angle` in degrees clockwise from north
-// (Gate B at the top of the plan), `r` in map units from the centre of the
-// atrium. The plan is schematic, so treat positions as approximate.
+// Source: "CANEX - V24 - Power Layout" master floor plans (DWTC-GF.1 to GF.5,
+// rev 24, 20 Oct 2026). Footprints in `src/data/footprints.json` are extracted
+// from the PDF by `tools/plan-extract`; this file holds names and metadata.
+//
+// Coordinates are metres on the plan: origin at the centre of the building,
+// x towards Gate C (east), y towards Gate D (south). Gate B is north.
 
-export type Category =
-  | "exhibition"
-  | "food"
-  | "room"
-  | "hub"
-  | "outdoor"
-  | "vip"
-  | "medical"
-  | "accreditation";
+import footprintData from "@/data/footprints.json";
 
+export type Vec2 = [number, number];
+export type Polygon = Vec2[];
+
+export type Category = "exhibition" | "food" | "venue" | "amenity" | "entrance";
+
+// Three hues carry identity on the map (validated colour-blind safe as a set,
+// all pairs); toilets and gates are neutral and always labelled.
 export const CATEGORIES: Record<Category, { label: string; color: string }> = {
-  exhibition: { label: "Exhibition booths", color: "#0f7b7b" },
-  food: { label: "Food & drink", color: "#d97a29" },
-  room: { label: "Rooms & lounges", color: "#8a4fa3" },
-  hub: { label: "Hubs & activities", color: "#3a73c0" },
-  outdoor: { label: "Outdoor sport", color: "#5e8c3a" },
-  vip: { label: "VIP entrance", color: "#a8701d" },
-  medical: { label: "Medical entrance", color: "#d23c4a" },
-  accreditation: { label: "Accreditation & registration", color: "#4150a3" },
+  exhibition: { label: "Exhibition booths", color: "#1baf7a" },
+  food: { label: "Food & drink", color: "#eb6834" },
+  venue: { label: "Hubs, stages & lounges", color: "#2a78d6" },
+  amenity: { label: "Toilets", color: "#c9d2ce" },
+  entrance: { label: "Entrances", color: "#2f3b37" },
 };
 
 export type FloorId = "G" | "M" | "2" | "3" | "4" | "5";
 
-export const FLOORS: { id: FloorId; name: string; short: string; level: number }[] = [
-  { id: "G", name: "Ground floor", short: "G", level: 0 },
+export interface Floor {
+  id: FloorId;
+  name: string;
+  short: string;
+  /** Position in the stack, used for the 3D view. */
+  level: number;
+  /** Finished floor level from the plans, in mm. */
+  elevation?: number;
+  /** Backdrop image traced from the plan. */
+  plan?: string;
+}
+
+export const FLOORS: Floor[] = [
+  { id: "G", name: "Ground floor", short: "G", level: 0, elevation: 0, plan: "/plans/floor-G.webp" },
   { id: "M", name: "Mezzanine", short: "M", level: 1 },
-  { id: "2", name: "Second floor", short: "2", level: 2 },
-  { id: "3", name: "Third floor", short: "3", level: 3 },
-  { id: "4", name: "Fourth floor", short: "4", level: 4 },
-  { id: "5", name: "Fifth floor", short: "5", level: 5 },
+  { id: "2", name: "Second floor", short: "2", level: 2, elevation: 3150, plan: "/plans/floor-2.webp" },
+  { id: "3", name: "Third floor", short: "3", level: 3, elevation: 4950, plan: "/plans/floor-3.webp" },
+  { id: "4", name: "Fourth floor", short: "4", level: 4, elevation: 6750, plan: "/plans/floor-4.webp" },
+  { id: "5", name: "Fifth floor", short: "5", level: 5, elevation: 8550, plan: "/plans/floor-5.webp" },
 ];
 
 export const floorById = (id: FloorId) => FLOORS.find((f) => f.id === id)!;
-
-/** An annular sector on the ground-floor plan. */
-export interface Sector {
-  a0: number;
-  a1: number;
-  r0: number;
-  r1: number;
-  /** Extrusion height in the 3D view. */
-  h?: number;
-}
 
 export interface Place {
   id: string;
@@ -57,184 +57,312 @@ export interface Place {
   floor: FloorId;
   zone?: string;
   note?: string;
-  /** Footprint drawn on the ground-floor map. */
-  shape?: Sector;
-  /** A point on the map for places without a footprint of their own. */
-  anchor?: { angle: number; r: number };
-  /** Located inside another place; routes and highlights use the parent. */
+  /** Floor area from the plan, m². */
+  area?: number;
+  /** Footprint key in footprints.json; defaults to `id`. */
+  fp?: string;
+  /** Position for places without a footprint (or a pin inside a shared one). */
+  point?: Vec2;
+  /** Inside another place (a booth in a block); highlights use the parent. */
   within?: string;
-  /** Reached from the concourse through this gate (outdoor places). */
+  /** Reached through this gate (outdoor places). */
   via?: string;
-  /** Not shown as a destination in search (e.g. stairs and lifts). */
+  /** Not offered as a destination. */
   hidden?: boolean;
+  /** A zone made of other places' booths (highlights its members, draws nothing itself). */
+  composite?: boolean;
 }
 
-// Radial bands of the ground-floor ring.
+const FOOTPRINTS = footprintData as unknown as Record<string, Polygon[]>;
+
+// Building rings, metres from the centre.
 export const RING = {
-  atrium: 2.7,
-  concourseInner: 2.8,
-  concourseOuter: 3.45,
-  /** The walking line along the circular concourse. */
-  walk: 3.1,
-  gate: 7.3,
-  floorEdge: 7.0,
+  /** Ground-floor concourse walking line. */
+  concourse: 54.5,
+  /** Wing walls: anything further out is inside an exhibition wing. */
+  wingWall: 61,
+  /** Upper-floor corridor walking line, just inside the lift lobbies. */
+  upper: 43,
+  /** Building edge at the gates. */
+  gate: 70,
+  outer: 88,
 };
-const INNER: [number, number] = [3.6, 4.5];
-const OUTER: [number, number] = [4.7, 6.6];
 
-const stall = (a0: number, a1: number): Sector => ({ a0, a1, r0: INNER[0], r1: INNER[1], h: 0.32 });
-const hall = (a0: number, a1: number, r0 = OUTER[0], r1 = OUTER[1], h = 0.6): Sector => ({ a0, a1, r0, r1, h });
+/** Angle in degrees clockwise from north (Gate B) of a plan point. */
+export const bearing = ([x, y]: Vec2) => ((Math.atan2(x, -y) * 180) / Math.PI + 360) % 360;
+export const radius = ([x, y]: Vec2) => Math.hypot(x, y);
+export const fromPolar = (angle: number, r: number): Vec2 => [r * Math.sin((angle * Math.PI) / 180), -r * Math.cos((angle * Math.PI) / 180)];
 
+const spelling = "Spelling as on the venue plan.";
 const ex1 = "Exhibition 1 · between Gates B and C";
 const ex2 = "Exhibition 2 · between Gates A and B";
-const hubsCD = "Hubs · between Gates C and D";
-const zoneDA = "Between Gates D and A";
+const conC = "Concourse · between Gates C and D";
+const conD = "Concourse · between Gates D and A";
+const conB = "Concourse · by Gate B";
 const unnamed = "Name not supplied";
-const spelling = "Spelling as supplied by the source plan.";
+
+type P = Omit<Place, "floor" | "category"> & Partial<Pick<Place, "category">>;
+const on = (floor: FloorId, category: Category, items: P[]): Place[] => items.map((p) => ({ category, floor, ...p }));
 
 const ground: Place[] = [
   // Gates
-  { id: "gate-a", code: "Gate A", name: "VIP Entrance", category: "vip", floor: "G", anchor: { angle: 270, r: RING.gate } },
-  { id: "gate-b", code: "Gate B", name: "Food Hub Exit", category: "food", floor: "G", anchor: { angle: 0, r: RING.gate } },
-  { id: "gate-c", code: "Gate C", name: "Medical Entrance", category: "medical", floor: "G", anchor: { angle: 90, r: RING.gate } },
-  { id: "gate-d", code: "Gate D", name: "Main Entrance · Accreditation & Registration", category: "accreditation", floor: "G", anchor: { angle: 180, r: RING.gate } },
+  ...on("G", "entrance", [{ id: "gate-a", code: "Gate A", name: "VIP Entrance", point: fromPolar(270, RING.gate) }]),
+  ...on("G", "entrance", [{ id: "gate-b", code: "Gate B", name: "Food Hub Exit", point: fromPolar(0, RING.gate) }]),
+  ...on("G", "entrance", [{ id: "gate-c", code: "Gate C", name: "Medical Entrance", point: fromPolar(90, RING.gate) }]),
+  ...on("G", "entrance", [{ id: "gate-d", code: "Gate D", name: "Main Entrance · Accreditation & Registration", point: fromPolar(180, RING.gate) }]),
 
-  // Outdoor
-  { id: "food-hub", name: "Food Hub", category: "food", floor: "G", zone: "Outside, at the Gate B exit", anchor: { angle: 14, r: 9.2 }, via: "gate-b" },
-  { id: "basketball-court", name: "Basketball Court", category: "outdoor", floor: "G", zone: "Outside VIP Entrance A", note: "Separate from the Basketball Africa booth inside Exhibition 1.", anchor: { angle: 257, r: 9.6 }, via: "gate-a" },
+  // Outdoor (not drawn on the floor plans; positions approximate)
+  ...on("G", "food", [{ id: "food-hub", name: "Food Hub", zone: "Outside, at the Gate B exit", via: "gate-b", point: [22, -102], note: "Outside the building. Position is approximate." }]),
+  ...on("G", "venue", [
+    { id: "basketball-court", name: "Basketball Court", zone: "Outside VIP Entrance A", via: "gate-a", point: [-108, 16], note: "Outside the building, separate from the Basketball Africa booth in Exhibition 1." },
+  ]),
 
-  // Exhibition 1: pavilions
-  { id: "ex01", code: "EX01", name: "Afrique Femme", category: "exhibition", floor: "G", zone: ex1, shape: hall(8, 18) },
-  { id: "ex02", code: "EX02", name: "Basketball Africa booth", category: "exhibition", floor: "G", zone: ex1, shape: hall(19, 30) },
-  { id: "ex03", code: "EX03", name: "Presidential Suite", category: "room", floor: "G", zone: ex1, shape: hall(31, 52, 5.6, 6.6, 0.7) },
-  { id: "ex06", code: "EX06", name: "Lagos State", category: "exhibition", floor: "G", zone: ex1, shape: hall(31, 52, 4.7, 5.45, 0.5) },
-  { id: "ex04", code: "EX04", name: "FMITI", category: "exhibition", floor: "G", zone: ex1, shape: hall(60, 69, 4.7, 6.2) },
-  { id: "ex05", code: "EX05", name: "Nigeria Host Country", category: "exhibition", floor: "G", zone: ex1, shape: hall(70, 83) },
-  // Exhibition 1: stalls
-  { id: "e07", code: "E07", name: "Fedility", category: "exhibition", floor: "G", zone: ex1, note: spelling, shape: stall(11, 17) },
-  { id: "e06", code: "E06", name: "Cambridge", category: "exhibition", floor: "G", zone: ex1, shape: stall(18, 24) },
-  { id: "e05", code: "E05", name: "Cardinal Torch", category: "exhibition", floor: "G", zone: ex1, shape: stall(25, 31) },
-  { id: "e04", code: "E04", name: "EU Global Gateway", category: "exhibition", floor: "G", zone: ex1, shape: stall(32, 38) },
-  { id: "e03", code: "E03", name: "Bet9ja / Value Jet", category: "exhibition", floor: "G", zone: ex1, shape: stall(39, 45) },
-  { id: "e02", code: "E02", name: unnamed, category: "exhibition", floor: "G", zone: ex1, shape: stall(46, 52) },
-  { id: "e01", code: "E01", name: "iDICE", category: "exhibition", floor: "G", zone: ex1, shape: stall(53, 59) },
+  // Concourse by Gate B
+  ...on("G", "exhibition", [
+    { id: "e07", code: "E07", name: "Fidelity", zone: conB, area: 36 },
+    { id: "e08", code: "E08", name: "Zenith Bank", zone: conB, area: 36 },
+  ]),
 
-  // Exhibition 2: pavilions and areas
-  { id: "ex07", code: "EX07", name: "Afreximbank Pavilion", category: "exhibition", floor: "G", zone: ex2, shape: hall(277, 297) },
-  { id: "ex08", code: "EX08", name: "AfCFTA", category: "exhibition", floor: "G", zone: ex2, shape: hall(298, 313) },
-  { id: "ex09", code: "EX09", name: "Africa Union", category: "exhibition", floor: "G", zone: ex2, note: "Listed in Exhibition 2 but not marked on the map. Ask a steward on arrival.", anchor: { angle: 315, r: 4.6 } },
-  { id: "innovation-hub", name: "Innovation Hub", category: "exhibition", floor: "G", zone: ex2, shape: hall(315, 334, 4.7, 5.4, 0.45) },
-  { id: "fashion-stalls", name: "Fashion stalls", category: "exhibition", floor: "G", zone: ex2, shape: hall(315, 336, 5.5, 6.6, 0.5) },
-  { id: "networking", name: "Networking area", category: "exhibition", floor: "G", zone: ex2, shape: hall(338, 352, 4.7, 5.4, 0.3) },
-  { id: "thread-of-nation", name: "Thread of Nation", category: "exhibition", floor: "G", zone: ex2, note: "10 booths.", shape: hall(338, 352, 5.5, 6.3, 0.5) },
-  { id: "panel-discussion", name: "Panel Discussion Stage", category: "room", floor: "G", zone: ex2, shape: hall(339, 352, 6.4, 7.0, 0.6) },
-  // Exhibition 2: stalls
-  { id: "e14", code: "E14", name: "IATF Sales", category: "exhibition", floor: "G", zone: ex2, shape: stall(282, 288) },
-  { id: "e13", code: "E13", name: "PAPS", category: "exhibition", floor: "G", zone: ex2, shape: stall(289, 295) },
-  { id: "e12", code: "E12", name: "NBS Malawi", category: "exhibition", floor: "G", zone: ex2, shape: stall(296, 302) },
-  { id: "e11", code: "E11", name: "Hands Down Coffee", category: "food", floor: "G", zone: ex2, shape: stall(303, 309) },
-  { id: "e10", code: "E10", name: "FDH Holding", category: "exhibition", floor: "G", zone: ex2, shape: stall(311, 317) },
-  { id: "e09", code: "E09", name: "Oak Wood Capital", category: "exhibition", floor: "G", zone: ex2, shape: stall(319, 325) },
-  { id: "e08", code: "E08", name: "Zenith Bank", category: "exhibition", floor: "G", zone: ex2, shape: stall(332, 338) },
+  // Exhibition 1
+  ...on("G", "exhibition", [
+    { id: "ex01", code: "EX01", name: "Afrique Femme", zone: ex1, area: 108 },
+    { id: "ex02", code: "EX02", name: "Basketball Africa", zone: ex1, area: 90 },
+    { id: "ex06", code: "EX06", name: "Lagos State", zone: ex1, area: 234 },
+    { id: "ex04", code: "EX04", name: "FMITI", zone: ex1, area: 100 },
+    { id: "ex05", code: "EX05", name: "Nigeria Host Country", zone: ex1, area: 232 },
+    { id: "e06", code: "E06", name: "Cambridge", zone: ex1 },
+    { id: "e05", code: "E05", name: "Cardinal Torch", zone: ex1 },
+    { id: "e04", code: "E04", name: "EU Global Gateway", zone: ex1 },
+    { id: "e03", code: "E03", name: "Bet9ja / Value Jet", zone: ex1 },
+    { id: "e02", code: "E02", name: unnamed, zone: ex1 },
+    { id: "e01", code: "E01", name: "iDICE", zone: ex1 },
+  ]),
+  ...on("G", "venue", [{ id: "ex03", code: "EX03", name: "Presidential Suite", zone: ex1, area: 288 }]),
+
+  // Exhibition 2
+  ...on("G", "exhibition", [
+    { id: "ex07", code: "EX07", name: "Afreximbank Pavilion", zone: ex2, area: 400 },
+    { id: "ex08", code: "EX08", name: "African Continental Free Trade Area (AfCFTA)", zone: ex2, area: 200 },
+    { id: "ex09", code: "EX09", name: "Africa Union", zone: ex2, area: 12 },
+    { id: "innovation-hub", name: "Innovation Hub", zone: ex2, area: 72 },
+    { id: "fashion-booths", name: "Fashion Booths", zone: ex2, note: "11 booths, FA01–FA11." },
+    { id: "thread-of-nation", code: "LF01–LF10", name: "Thread of Nation booths", zone: ex2, note: "10 booths in two rows." },
+    { id: "networking", name: "Networking Area", zone: ex2 },
+    { id: "e14", code: "E14", name: "IATF Sales", zone: ex2 },
+    { id: "e13", code: "E13", name: "PAPS", zone: ex2 },
+    { id: "e12", code: "E12", name: "NBS Malawi", zone: ex2 },
+    { id: "e10", code: "E10", name: "FDH Holding", zone: ex2 },
+    { id: "e09", code: "E09", name: "Oak Wood Capital", zone: ex2 },
+  ]),
+  ...on("G", "food", [{ id: "e11", code: "E11", name: "Hands Down Coffee", zone: ex2 }]),
+  ...on("G", "venue", [{ id: "panel-discussion", name: "Panel Discussion Stage", zone: ex2, note: "Stage with LED screen, seats 52." }]),
 
   // Hubs between C and D
-  { id: "sport-hub", name: "Sport Hub Stage", category: "hub", floor: "G", zone: hubsCD, shape: hall(97, 122, 4.7, 6.6, 0.5) },
-  { id: "film-hub", name: "Film Hub Stage", category: "hub", floor: "G", zone: hubsCD, shape: hall(124, 147, 4.7, 6.6, 0.5) },
-  { id: "live-theatre", name: "Live Theatre Stage", category: "hub", floor: "G", zone: hubsCD, shape: hall(149, 176, 4.7, 6.6, 0.5) },
-  { id: "e27", code: "E27", name: unnamed, category: "exhibition", floor: "G", zone: hubsCD, shape: stall(99, 105) },
-  { id: "e26", code: "E26", name: "Arise", category: "exhibition", floor: "G", zone: hubsCD, shape: stall(106, 112) },
-  { id: "e25", code: "E25", name: "ITC Fashion", category: "exhibition", floor: "G", zone: hubsCD, shape: stall(116, 122) },
-  { id: "e24", code: "E24", name: "ITC", category: "exhibition", floor: "G", zone: hubsCD, shape: stall(125, 131) },
-  { id: "e23", code: "E23", name: "National Revenue Service", category: "exhibition", floor: "G", zone: hubsCD, shape: stall(143, 149) },
-  { id: "e22", code: "E22", name: "Flatter Wave", category: "exhibition", floor: "G", zone: hubsCD, note: spelling, shape: stall(159, 165) },
+  ...on("G", "venue", [
+    { id: "sport-hub", name: "Sport Hub", zone: "Hubs · between Gates C and D", note: "Has its own stage." },
+    { id: "film-hub", name: "Film Hub", zone: "Hubs · between Gates C and D", note: "Has its own stage." },
+    { id: "live-theatre", name: "Live Theater", zone: "Hubs · between Gates C and D", note: "Has its own stage." },
+    { id: "canex-programming", name: "CANEX Programming Events", zone: "Between Gates D and A" },
+  ]),
+  ...on("G", "exhibition", [
+    { id: "e27", code: "E27", name: unnamed, zone: conC },
+    { id: "e26", code: "E26", name: "Arise", zone: conC },
+    { id: "e25", code: "E25", name: "ITC Fashion", zone: conC },
+    { id: "e24", code: "E24", name: "ITC", zone: conC },
+    { id: "e23", code: "E23", name: "National Revenue Service", zone: conC },
+    { id: "e22", code: "E22", name: "Flatter Wave", zone: conC, note: spelling },
+    { id: "e21", code: "E21", name: "British Council", zone: conD },
+    { id: "e20", code: "E20", name: "Heych", zone: conD },
+    { id: "e19", code: "E19", name: "Media Craft Africa", zone: conD },
+    { id: "e18", code: "E18", name: "Yutee Rone", zone: conD },
+    { id: "e17", code: "E17", name: "Development Bank of Nigeria", zone: conD },
+    { id: "e16", code: "E16", name: "Ojude Aso", zone: conD },
+    { id: "e15", code: "E15", name: unnamed, zone: conD },
+  ]),
 
-  // Between D and A
-  { id: "canex-programming", name: "CANEX Programming Events", category: "hub", floor: "G", zone: zoneDA, shape: hall(184, 262, 4.7, 6.6, 0.45) },
-  { id: "e21", code: "E21", name: "British Council", category: "exhibition", floor: "G", zone: zoneDA, shape: stall(186, 192) },
-  { id: "e20", code: "E20", name: "Heych", category: "exhibition", floor: "G", zone: zoneDA, shape: stall(193, 199) },
-  { id: "e19", code: "E19", name: "Media Craft Africa", category: "exhibition", floor: "G", zone: zoneDA, shape: stall(200, 206) },
-  { id: "e18", code: "E18", name: "Yutee Rone", category: "exhibition", floor: "G", zone: zoneDA, shape: stall(207, 213) },
-  { id: "e17", code: "E17", name: "Development Bank Nigeria", category: "exhibition", floor: "G", zone: zoneDA, shape: stall(216, 222) },
-  { id: "e16", code: "E16", name: "Ojude Aso", category: "exhibition", floor: "G", zone: zoneDA, shape: stall(225, 231) },
-  { id: "e15", code: "E15", name: unnamed, category: "exhibition", floor: "G", zone: zoneDA, shape: stall(234, 240) },
-
-  // Vertical circulation. The plan doesn't show stairs or lifts, so this is a
-  // placeholder by the main entrance. Update `anchor` once confirmed on site.
-  { id: "core", name: "Stairs & lifts", category: "accreditation", floor: "G", hidden: true, anchor: { angle: 180, r: 2.35 } },
+  // Bars
+  ...on("G", "food", [
+    { id: "cinema-bar", name: "Cinema Bar", zone: "Concourse · by the Sport Hub" },
+    { id: "conference-bar", name: "Conference Banquet Hall Bar", zone: "By Gate A" },
+    { id: "bar-ex2", name: "Exhibition Hall Bar (Exhibition 2 side)", zone: "Concourse · between Gates A and B" },
+    { id: "bar-ex1", name: "Exhibition Hall Bar (Exhibition 1 side)", zone: "Concourse · between Gates B and C" },
+  ]),
 ];
 
-const fashionStalls = [
-  "Arantiwa Global Fasion",
-  "Afro Fashion Paradise",
-  "Shop Soma",
-  "Trax Apparel",
-  "YYDTS Personal Care",
-  "Israella Kobla",
-  "Sustainablaty",
-  "Circular Business",
-  "Lal Labode Heritage Foundation",
-  "Republic of Ruru",
-  "Fashion Future Program",
-].map<Place>((name) => ({
+const fashion = [
+  ["FA01", "Trax Apparel", [-48.0, -56.4]],
+  ["FA02", "Shop Soma", [-49.8, -58.4]],
+  ["FA03", "Afro Fashion Paradise", [-51.7, -60.7]],
+  ["FA04", "Arantiwa Global Fasion", [-53.5, -62.9]],
+  ["FA05", "YYDTS Personal Care", [-56.5, -59.3]],
+  ["FA06", "Circular Business", [-52.9, -57.6]],
+  ["FA07", "Lal Labode Heritage Foundation", [-55.3, -53.6]],
+  ["FA08", "Israella Kobla", [-57.6, -57.2]],
+  ["FA09", "Sustainablaty", [-59.2, -59.9]],
+  [undefined, "Republic of Ruru", [-50.4, -64.3]],
+  [undefined, "Fashion Future Program", [-46.8, -59.7]],
+] as const;
+
+const fashionBooths: Place[] = fashion.map(([code, name, point]) => ({
   id: `fashion-${slug(name)}`,
+  code,
   name,
   category: "exhibition",
   floor: "G",
-  zone: "Fashion stalls · Exhibition 2",
-  within: "fashion-stalls",
-  note: name.endsWith("Fasion") || name === "Sustainablaty" ? spelling : undefined,
+  zone: "Fashion Booths · Exhibition 2",
+  within: "fashion-booths",
+  point: point as unknown as Vec2,
+  note: name.includes("Fasion") || name === "Sustainablaty" ? spelling : undefined,
 }));
 
-const upper = (floor: FloorId, category: Category, entries: string[]): Place[] =>
-  entries.map((entry) => {
-    const m = entry.match(/^([A-Z]{2}\d{2})\s+(.*)$/);
-    const name = m ? m[2] : entry;
-    return { id: `${floor}-${slug(entry)}`, code: m?.[1], name, category, floor };
-  });
-
-const upperFloorNote = "The plan groups this with Mezzanine–Third without naming the floor. Check signage at the lifts.";
-
-const upperFloors: Place[] = [
-  { id: "M-cc-booths", code: "CC01–CC20", name: "Mezzanine booths", category: "exhibition", floor: "M" },
-  { id: "M-ex10", code: "EX10", name: "Meera State", category: "exhibition", floor: "M", note: spelling },
-  { id: "2-afreximbank-offices", name: "Afreximbank offices", category: "room", floor: "2" },
-  { id: "2-podcast", name: "Podcast", category: "hub", floor: "2" },
-  { id: "2-soup-kitchen", name: "Soup Kitchen", category: "food", floor: "2" },
-  { id: "3-ministerial-vip-lounge", name: "Ministerial VIP Lounge", category: "room", floor: "3" },
-  { id: "3-hosted-buyers-lounge", name: "Hosted Buyers Lounge", category: "room", floor: "3", note: upperFloorNote },
-  { id: "3-press-lounge", name: "Press Lounge", category: "room", floor: "3", note: upperFloorNote },
-  { id: "3-sponsor-lounge", name: "Sponsor Lounge", category: "room", floor: "3", note: upperFloorNote },
-
-  ...upper("4", "exhibition", [
-    "Nuit", "Fashion Law Academy", "Mashakara", "Beauty B", "Woven Africa", "Niaga", "Nancy Hanson", "Culture",
-    "Afrix", "Abia", "Kwara Grment", "Spoof", "Tiffany Amber", "Kene Rafu", "Neptunes Female", "NEPC",
-    "Beauty in the Motherland", "AMCE", "World Bank", "SEDC",
-  ]),
-  ...upper("4", "food", ["Ounje & Co", "VIP Dining"]),
-  ...upper("4", "room", ["Writing Workshop", "Master Class B", "Master Class C", "Studio Music Hub", "Offices"]),
-
-  ...upper("5", "exhibition", [
-    "HM01 Lele Labs & Living", "HM02 Xandria", "HM03 Arawa", "HM04 Ron Beard", "HM05 Ram Creation",
-    "HM06 K&S Aisha Abu.", "HM07 Femi Goods", "HM08 Geometric", "HM09 Eleventh Edition",
-    "FB01 Adire Teens", "FB02 Jon Pelumi Clothing",
-    "LB01 Narrative Creative", "LB02 Roving Heights Ltd", "LB03 Roving Heights Ltd", "LB04 Casava Republic",
-    "LB05 Book Buz", "LB06 Marie Lora-Mugai", "LB07 XP Global", "LB08 Selina Venture",
-    "TB01 Lebara Nigeria", "TB02 Jalent Africa", "TB03 Eleve Creative", "TB04 Mano River Week",
-    "AB01 Maison des Mondes", "AB02 Raritan Consultation", "AB03 Ovico Gallery",
-    "Art Exhibition", "Literature booths", "Executive Marketplace",
-  ]),
-  ...upper("5", "hub", ["Reading Corner"]),
+const second: Place[] = [
+  ...on("2", "exhibition", [{ id: "meera-state", code: "EX10", name: "Meera State", area: 200, zone: "By the Gate D lifts", note: spelling }]),
+  ...on("2", "venue", [{ id: "podcast", name: "Podcast", area: 72, zone: "By the Gate D lifts" }]),
+  ...on("2", "food", [{ id: "soup-kitchen", name: "Soup Kitchen", area: 72, zone: "By the Gate D lifts" }]),
+  ...on("2", "venue", [{ id: "afrexim-offices", name: "Afreximbank Office Space", zone: "Between Gates C and D", note: "Offices 1–16." }]),
 ];
 
-export const PLACES: Place[] = [...ground, ...fashionStalls, ...upperFloors];
+const third: Place[] = on("3", "venue", [
+  { id: "hosted-buyers-lounge", name: "Hosted Buyers Lounge", fp: "lounges-3", area: 572, zone: "By the Gate B lifts", note: "Shares a 572 m² space with the Press and Sponsor lounges." },
+  { id: "press-lounge", name: "Press Lounge", fp: "lounges-3", zone: "By the Gate B lifts", note: "Shares a 572 m² space with the Hosted Buyers and Sponsor lounges." },
+  { id: "sponsor-lounge", name: "Sponsor Lounge", fp: "lounges-3", zone: "By the Gate B lifts", note: "Shares a 572 m² space with the Hosted Buyers and Press lounges." },
+  { id: "ministerial-vip", name: "Ministerial VIP Lounge", area: 480, zone: "By the Gate A lifts" },
+  { id: "ministerial-meeting", name: "Ministerial Meeting Space", area: 100, zone: "By the Gate A lifts" },
+]);
+
+const fourth: Place[] = [
+  ...on("4", "venue", [
+    { id: "writing-workshop", name: "Writing Workshop", zone: "Between Gates B and C" },
+    { id: "master-class-b", name: "Master Class B", zone: "C side, north" },
+    { id: "master-class-c", name: "Master Class C", zone: "C side, south", note: "Labelled “Master Class B” on the plan; listed as C in the event guide." },
+    { id: "studio-music-hub", name: "Studio Music Hub", zone: "C side" },
+    { id: "offices-4", name: "Offices", zone: "C side" },
+  ]),
+  ...on("4", "food", [
+    { id: "vip-dining", name: "VIP Dining", zone: "By the Gate A lifts", note: "Spelled “VIP Dinning” on the plan." },
+    { id: "ounje-and-co", code: "ML09", name: "Ounje & Co", zone: "Marketplace tables" },
+  ]),
+  ...on("4", "exhibition", [
+    { id: "nuit", code: "ML01", name: "Nuit", zone: "Marketplace tables" },
+    { id: "fashion-law-academy", code: "ML02", name: "Fashion Law Academy", zone: "Marketplace tables" },
+    { id: "mashakara", code: "ML03", name: "Mashakara", zone: "Marketplace tables" },
+    { id: "beauty-b", code: "ML04", name: "Beauty B", zone: "Marketplace tables" },
+    { id: "nancy-hanson", code: "ML05", name: "Nancy Hanson", zone: "Marketplace tables" },
+    { id: "niaga", code: "ML06", name: "Niaga", zone: "Marketplace tables" },
+    { id: "woven-africa", code: "ML07", name: "Woven Africa", zone: "Marketplace tables" },
+    { id: "aga-culture", code: "ML08", name: "Aga Culture", zone: "Marketplace tables" },
+    { id: "spoof", code: "Y01", name: "Spoof" },
+    { id: "amce", code: "Y02", name: "AMCE" },
+    { id: "nepc", code: "Y03", name: "NEPC", area: 36 },
+    { id: "abia", code: "Y04", name: "Abia" },
+    { id: "afrix", code: "Y05", name: "Afrix" },
+    { id: "kwara-grment", code: "Y06", name: "Kwara Grment", note: spelling },
+    { id: "tiffany-amber", code: "Y07", name: "Tiffany Amber" },
+    { id: "beauty-in-the-motherland", code: "Y08", name: "Beauty in the Motherland", area: 218 },
+    { id: "world-bank", code: "Y09", name: "World Bank", area: 72 },
+    { id: "sedc", code: "Y10", name: "SEDC", area: 72 },
+    { id: "pwc", name: "PWC" },
+    { id: "neptunes-female", code: "BM01", name: "Neptunes Female" },
+    { id: "kene-rafu", code: "BM02", name: "Kene Rafu" },
+  ]),
+];
+
+const fifth: Place[] = [
+  ...on("5", "exhibition", [
+    { id: "executive-marketplace", name: "Executive Marketplace", note: "HM01–HM09.", composite: true },
+    { id: "hm01", code: "HM01", name: "Lele Labs & Living", zone: "Executive Marketplace" },
+    { id: "hm02", code: "HM02", name: "Xandria", zone: "Executive Marketplace" },
+    { id: "hm03", code: "HM03", name: "Arawa", zone: "Executive Marketplace" },
+    { id: "hm04", code: "HM04", name: "Ron Beard Ram", zone: "Executive Marketplace" },
+    { id: "hm05", code: "HM05", name: "K&S Creation", zone: "Executive Marketplace" },
+    { id: "hm06", code: "HM06", name: "Aisha Abu", zone: "Executive Marketplace" },
+    { id: "hm07", code: "HM07", name: "Femi Goods", zone: "Executive Marketplace" },
+    { id: "hm08", code: "HM08", name: "Geometric", zone: "Executive Marketplace" },
+    { id: "hm09", code: "HM09", name: "Eleventh Edition", zone: "Executive Marketplace" },
+    { id: "fb01", code: "FB01", name: "Adire Teems" },
+    { id: "fb02", code: "FB02", name: "Jon Pelumi Clothing" },
+    { id: "literature-booths", name: "Literature Booths", note: "LB01–LB08.", composite: true },
+    { id: "lb01", code: "LB01", name: "Narrative Creative", zone: "Literature Booths" },
+    { id: "lb02", code: "LB02", name: "Roving Heights Ltd", zone: "Literature Booths" },
+    { id: "lb03", code: "LB03", name: "Roving Heights Ltd", zone: "Literature Booths" },
+    { id: "lb04", code: "LB04", name: "Cassava Republic", zone: "Literature Booths" },
+    { id: "lb05", code: "LB05", name: "Book Buzz", zone: "Literature Booths" },
+    { id: "lb06", code: "LB06", name: "Marie Lora-Mugai", zone: "Literature Booths" },
+    { id: "lb07", code: "LB07", name: "XP Global", zone: "Literature Booths" },
+    { id: "lb08", code: "LB08", name: "Selina Venture", zone: "Literature Booths" },
+    { id: "tb01", code: "TB01", name: "Lebara Nigeria" },
+    { id: "tb02", code: "TB02", name: "Jalent Africa" },
+    { id: "tb03", code: "TB03", name: "Eleve Creative" },
+    { id: "tb04", code: "TB04", name: "Mano River Week" },
+    { id: "ab01", code: "AB01", name: "Maison des Mondes" },
+    { id: "ab02", code: "AB02", name: "Raritan Consultation Ltd" },
+    { id: "ab03", code: "AB03", name: "Ovico Gallery" },
+    { id: "art-exhibition", code: "A01–A13", name: "Art Exhibition", note: "13 booths." },
+  ]),
+  ...on("5", "venue", [{ id: "reading-corner", name: "Reading Corner", note: "Seats 20." }]),
+];
+
+const mezzanine: Place[] = on("M", "exhibition", [
+  {
+    id: "mezzanine-booths",
+    code: "CC01–CC20",
+    name: "Mezzanine booths",
+    note: "Listed in the event guide; the V24 floor plans don't include a mezzanine layout. Ask a steward at the lifts.",
+  },
+]);
+
+const WC_SPOTS: [string, string][] = [
+  ["0", "between Gates B and C"],
+  ["1", "between Gates C and D"],
+  ["2", "between Gates D and A"],
+  ["3", "between Gates A and B"],
+];
+const toilets: Place[] = (["G", "4", "5"] as const).flatMap((floor) =>
+  WC_SPOTS.map(([k, side]) => ({ id: `wc-${floor}-${k}`, name: "Toilets", zone: `${floorById(floor).name} · ${side}`, category: "amenity" as const, floor })),
+);
+
+/** Lift and stair cores, the same on every floor. */
+export const CORES = [
+  { id: "core-b", name: "Gate B lifts", point: [0, -46] as Vec2 },
+  { id: "core-d", name: "Gate D lifts", point: [0, 46] as Vec2 },
+  { id: "core-a", name: "Gate A lifts", point: [-46.5, 0] as Vec2 },
+];
+/** Individual lift cars, for drawing. */
+export const LIFTS: Vec2[] = [
+  [-12.3, -45.9], [12.3, -45.9], [-12.0, 45.5], [12.3, 45.5], [-46.5, -7.6], [-46.5, 7.7],
+];
+
+export const PLACES: Place[] = [...ground, ...fashionBooths, ...mezzanine, ...second, ...third, ...fourth, ...fifth, ...toilets];
 
 const byId = new Map(PLACES.map((p) => [p.id, p]));
 export const getPlace = (id: string | null | undefined) => (id ? byId.get(id) : undefined);
 
-/** The place whose footprint represents `p` on the map (itself, or its parent). */
+/** The place whose footprint represents `p` on the map (itself, or its parent block). */
 export const footprintOf = (p: Place): Place => (p.within ? byId.get(p.within) ?? p : p);
 
+export function polygonsOf(p: Place): Polygon[] {
+  const f = footprintOf(p);
+  return FOOTPRINTS[f.fp ?? f.id] ?? [];
+}
+
+/** Where to put the pin for a place: its own point, else its footprint's centre. */
+export function placePoint(p: Place): Vec2 {
+  if (p.point) return p.point;
+  const polys = polygonsOf(p);
+  if (!polys.length) return CORES[1].point;
+  let sx = 0, sy = 0, n = 0;
+  for (const poly of polys) {
+    for (const [x, y] of poly) {
+      sx += x;
+      sy += y;
+      n++;
+    }
+  }
+  return [sx / n, sy / n];
+}
+
 export const GATES = ground.filter((p) => p.id.startsWith("gate-"));
+export const isGate = (p: Place) => p.id.startsWith("gate-");
 
 export const label = (p: Place) => (p.code ? `${p.code} · ${p.name}` : p.name);
 

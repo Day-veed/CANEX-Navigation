@@ -1,15 +1,49 @@
 "use client";
 
-import { CameraControls, Html, Line, Text } from "@react-three/drei";
+import { CameraControls, Html, Line, Text, useTexture } from "@react-three/drei";
 import { Canvas, useFrame, type ThreeEvent } from "@react-three/fiber";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
-import { FLOOR_GAP, placePoint, polar, type Route, type Vec3 } from "@/lib/routing";
-import { CATEGORIES, FLOORS, footprintOf, getPlace, PLACES, RING, type Place, type Sector } from "@/lib/venue";
+import { FLOOR_GAP, toScene, type Route, type Vec3 } from "@/lib/routing";
+import {
+  bearing,
+  CATEGORIES,
+  CORES,
+  FLOORS,
+  floorById,
+  footprintOf,
+  fromPolar,
+  getPlace,
+  GATES,
+  LIFTS,
+  PLACES,
+  placePoint,
+  polygonsOf,
+  type Floor,
+  type FloorId,
+  type Place,
+  type Polygon,
+} from "@/lib/venue";
 
 const FONT = "/fonts/inter-600.woff";
 const FONT_BOLD = "/fonts/inter-800.woff";
 const ROUTE_COLOR = "#e8451e";
+const PLAN_HALF = 92;
+const INK = "#1f2d29";
+
+/** White or dark ink, whichever reads better on a fill (WCAG contrast). */
+function labelInk(fill: string) {
+  // Relative luminance from the sRGB hex (THREE.Color would already linearise it).
+  const lum = (hex: string) => {
+    const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const f = lum(fill);
+  const ink = lum(INK);
+  const onWhite = 1.05 / (f + 0.05);
+  const onInk = (f + 0.05) / (ink + 0.05);
+  return onWhite >= 4.5 || onWhite >= onInk ? "#ffffff" : INK;
+}
 
 export type ViewMode = "3d" | "2d";
 
@@ -17,100 +51,192 @@ interface Props {
   route: Route | null;
   fromId: string;
   toId: string | null;
+  floor: FloorId;
+  stacked: boolean;
   view: ViewMode;
-  showFloors: boolean;
   onSelect: (id: string) => void;
 }
 
-export default function VenueScene({ route, fromId, toId, view, showFloors, onSelect }: Props) {
+/** Places that own a footprint drawn on the map (one per footprint key). */
+const DRAWN = (() => {
+  const seen = new Set<string>();
+  const out: Place[] = [];
+  for (const p of PLACES) {
+    if (p.within || p.composite || !polygonsOf(p).length) continue;
+    const key = p.fp ?? p.id;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(p);
+  }
+  return out;
+})();
+
+/** Label for a footprint shared by several places. */
+const sharedName = (p: Place) => {
+  if (!p.fp) return null;
+  const all = PLACES.filter((q) => q.fp === p.fp);
+  return all.length > 1 ? all.map((q) => q.name.replace(/ Lounge$/, "")).join(" · ") + " Lounge" : null;
+};
+
+export default function VenueScene({ route, fromId, toId, floor, stacked, view, onSelect }: Props) {
   const to = getPlace(toId);
   const from = getPlace(fromId);
   const focus = useMemo(() => {
     const ids = new Set<string>();
-    if (to) ids.add(footprintOf(to).id);
-    if (from) ids.add(footprintOf(from).id);
+    for (const p of [to, from]) {
+      if (!p) continue;
+      const f = footprintOf(p);
+      ids.add(f.fp ?? f.id);
+      // Zones like "Literature Booths" highlight their member booths.
+      if (p.composite) for (const q of PLACES) if (q.zone === p.name) ids.add(q.fp ?? q.id);
+    }
     return ids;
   }, [to, from]);
-  const targetLevel = to && to.floor !== "G" ? FLOORS.find((f) => f.id === to.floor)!.level : null;
-  const fromLevel = from && from.floor !== "G" ? FLOORS.find((f) => f.id === from.floor)!.level : null;
-  const floorsVisible = showFloors || targetLevel !== null || fromLevel !== null;
+
+  const visible = useMemo(() => {
+    if (stacked) return new Set(FLOORS.map((f) => f.id));
+    return new Set<FloorId>([floor, ...(route?.floors ?? [])]);
+  }, [stacked, floor, route]);
 
   return (
-    <Canvas dpr={[1, 2]} camera={{ position: [0, 13, 11], fov: 45, near: 0.1, far: 200 }} onPointerMissed={() => (document.body.style.cursor = "")}>
+    <Canvas dpr={[1, 2]} camera={{ position: [0, 150, 130], fov: 42, near: 1, far: 2000 }} onPointerMissed={() => (document.body.style.cursor = "")}>
       <color attach="background" args={["#e9eeeb"]} />
-      <hemisphereLight args={["#ffffff", "#b9c4bf", 1.6]} />
-      <directionalLight position={[6, 14, 8]} intensity={1.6} />
+      <hemisphereLight args={["#ffffff", "#b9c4bf", 1.5]} />
+      <directionalLight position={[60, 140, 80]} intensity={1.5} />
 
-      <Ground />
-      {PLACES.filter((p) => p.shape).map((p) => (
-        <Booth key={p.id} place={p} focused={focus.has(p.id)} dimmed={!!route && !focus.has(p.id)} onSelect={onSelect} />
-      ))}
-      {PLACES.filter((p) => p.id.startsWith("gate-")).map((p) => (
-        <Gate key={p.id} place={p} focused={focus.has(p.id)} onSelect={onSelect} />
-      ))}
-      <BasketballCourt focused={focus.has("basketball-court")} onSelect={onSelect} />
-      <FoodHub focused={focus.has("food-hub")} onSelect={onSelect} />
-      <Core height={floorsVisible ? 5 * FLOOR_GAP : 0.9} />
-      {floorsVisible && <UpperFloors highlight={[targetLevel, fromLevel]} />}
+      <mesh rotation-x={-Math.PI / 2} position-y={-0.05}>
+        <circleGeometry args={[260, 64]} />
+        <meshStandardMaterial color="#dfe6e2" />
+      </mesh>
+
+      <Suspense fallback={null}>
+        {FLOORS.filter((f) => visible.has(f.id)).map((f) => (
+          <FloorLayer
+            key={f.id}
+            floor={f}
+            active={f.id === floor || route?.to.floor === f.id}
+            dimmed={!!route && !route.floors.includes(f.id)}
+            seeThrough={visible.size > 1 && f.level > 0}
+            showName={visible.size > 1}
+            focus={focus}
+            hasRoute={!!route}
+            onSelect={onSelect}
+          />
+        ))}
+      </Suspense>
 
       {route && route.points.length > 1 && <RoutePath points={route.points} />}
-      {from && <Marker position={endPoint(from, route, "start")} label="You are here" tone="start" />}
-      {to && to.id !== from?.id && <Marker position={endPoint(to, route, "end")} label={to.code ?? to.name} tone="end" />}
+      {from && <Marker position={route?.points[0] ?? toScene(from.floor, placePoint(from))} label="You are here" tone="start" />}
+      {to && to.id !== from?.id && <Marker position={route?.points[route.points.length - 1] ?? toScene(to.floor, placePoint(to))} label={to.code && !to.code.includes("–") ? to.code : to.name} tone="end" />}
 
-      <CameraRig view={view} route={route} />
+      <CameraRig view={view} route={route} floor={floor} stacked={stacked} />
     </Canvas>
   );
 }
 
-function endPoint(p: Place, route: Route | null, which: "start" | "end"): Vec3 {
-  if (route && route.points.length) return which === "start" ? route.points[0] : route.points[route.points.length - 1];
-  return placePoint(p);
-}
+// ---------------------------------------------------------------- floors
 
-// Geometry helpers
-
-function sectorShape(s: Sector) {
-  const phi = (a: number) => ((90 - a) * Math.PI) / 180;
-  const p0 = phi(s.a0);
-  const p1 = phi(s.a1);
-  const shape = new THREE.Shape();
-  shape.moveTo(s.r1 * Math.cos(p0), s.r1 * Math.sin(p0));
-  shape.absarc(0, 0, s.r1, p0, p1, true);
-  shape.lineTo(s.r0 * Math.cos(p1), s.r0 * Math.sin(p1));
-  shape.absarc(0, 0, s.r0, p1, p0, false);
-  shape.closePath();
-  return shape;
-}
-
-function useSectorGeometry(s: Sector) {
-  return useMemo(() => {
-    const g = new THREE.ExtrudeGeometry(sectorShape(s), { depth: s.h ?? 0.4, bevelEnabled: false, curveSegments: 32 });
-    g.rotateX(-Math.PI / 2);
-    return g;
-  }, [s]);
-}
-
-/** Text lying flat on the floor, oriented to read along the ring. */
-function FlatLabel({ angle, r, y, children, size, maxWidth, bold }: { angle: number; r: number; y: number; children: string; size: number; maxWidth?: number; bold?: boolean }) {
-  const flip = angle > 90 && angle < 270;
+function FloorLayer({
+  floor,
+  active,
+  dimmed,
+  seeThrough,
+  showName,
+  focus,
+  hasRoute,
+  onSelect,
+}: {
+  floor: Floor;
+  active: boolean;
+  dimmed: boolean;
+  seeThrough: boolean;
+  showName: boolean;
+  focus: Set<string>;
+  hasRoute: boolean;
+  onSelect: (id: string) => void;
+}) {
+  const y = floor.level * FLOOR_GAP;
+  const places = DRAWN.filter((p) => p.floor === floor.id);
   return (
-    <group rotation={[0, (-angle * Math.PI) / 180, 0]}>
-      <Text
-        font={bold ? FONT_BOLD : FONT}
-        position={[0, y, -r]}
-        rotation={[-Math.PI / 2, 0, flip ? Math.PI : 0]}
-        fontSize={size}
-        maxWidth={maxWidth}
-        textAlign="center"
-        anchorX="center"
-        anchorY="middle"
-        lineHeight={1.1}
-        color="#ffffff"
-      >
-        {children}
-      </Text>
+    <group position-y={y}>
+      <mesh rotation-x={-Math.PI / 2} position-y={0.01}>
+        <circleGeometry args={[90, 128]} />
+        <meshStandardMaterial color="#f7f8f6" transparent opacity={floor.level === 0 ? 1 : dimmed ? 0.3 : seeThrough ? 0.55 : 0.92} depthWrite={floor.level === 0} />
+      </mesh>
+      {floor.plan && <Backdrop url={floor.plan} opacity={dimmed ? 0.35 : 1} />}
+      {!floor.plan && <NoPlan />}
+      {places.map((p) => {
+        const key = p.fp ?? p.id;
+        return <Booth key={key} place={p} focused={focus.has(key)} dimmed={dimmed || (hasRoute && !focus.has(key))} onSelect={onSelect} />;
+      })}
+      {floor.id === "G" && (
+        <>
+          {GATES.map((g) => (
+            <Gate key={g.id} place={g} focused={focus.has(g.id)} onSelect={onSelect} />
+          ))}
+          <BasketballCourt focused={focus.has("basketball-court")} onSelect={onSelect} />
+          <FoodHub focused={focus.has("food-hub")} onSelect={onSelect} />
+        </>
+      )}
+      <Lifts showLabels={active} />
+      {showName && (
+        <Html position={[fromPolar(300, 96)[0], 2, fromPolar(300, 96)[1]]} center zIndexRange={[10, 0]}>
+          <div className={`pointer-events-none whitespace-nowrap rounded-full px-3 py-1 text-[12px] font-semibold shadow ${active ? "bg-[#1f2d29] text-white" : "bg-white/90 text-[#3a4743]"}`}>{floor.name}</div>
+        </Html>
+      )}
     </group>
   );
+}
+
+function Backdrop({ url, opacity }: { url: string; opacity: number }) {
+  const tex = useTexture(url, (t) => {
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.anisotropy = 8;
+  });
+  return (
+    <mesh rotation-x={-Math.PI / 2} position-y={0.03}>
+      <planeGeometry args={[PLAN_HALF * 2, PLAN_HALF * 2]} />
+      <meshBasicMaterial map={tex} transparent opacity={opacity} depthWrite={false} toneMapped={false} />
+    </mesh>
+  );
+}
+
+function NoPlan() {
+  const ring = useMemo(() => Array.from({ length: 97 }, (_, i) => toScene("G", fromPolar((i * 360) / 96, 62))), []);
+  return (
+    <>
+      <Line points={ring} color="#9aa8a3" lineWidth={1} dashed dashSize={3} gapSize={2} />
+      <Text font={FONT} position={[0, 0.2, 0]} rotation-x={-Math.PI / 2} fontSize={4} color="#7f8f89">
+        No layout in the V24 plans
+      </Text>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------- booths
+
+function shapesOf(polys: Polygon[]) {
+  // Plan y points south; the shape is built in x/-y then laid flat.
+  return polys.map((poly) => new THREE.Shape(poly.map(([x, y]) => new THREE.Vector2(x, -y))));
+}
+
+function areaOf(polys: Polygon[]) {
+  let a = 0;
+  for (const poly of polys) for (let i = 0; i < poly.length; i++) {
+    const [x1, y1] = poly[i];
+    const [x2, y2] = poly[(i + 1) % poly.length];
+    a += x1 * y2 - x2 * y1;
+  }
+  return Math.abs(a / 2);
+}
+
+function heightOf(p: Place, area: number) {
+  if (p.category === "amenity") return 0.8;
+  if (p.category === "venue" && area > 400) return 0.6;
+  if (area > 400) return 0.8;
+  if (area > 150) return 2.8;
+  if (area > 40) return 2.5;
+  return 2.1;
 }
 
 function usePointer(onSelect: (id: string) => void, id: string) {
@@ -135,99 +261,84 @@ function usePointer(onSelect: (id: string) => void, id: string) {
   };
 }
 
-// Scene pieces
-
-function Ground() {
-  return (
-    <group>
-      <mesh rotation-x={-Math.PI / 2} position-y={-0.02}>
-        <circleGeometry args={[40, 64]} />
-        <meshStandardMaterial color="#dfe6e2" />
-      </mesh>
-      <mesh rotation-x={-Math.PI / 2} position-y={0}>
-        <circleGeometry args={[RING.floorEdge, 128]} />
-        <meshStandardMaterial color="#f7f8f6" />
-      </mesh>
-      <mesh rotation-x={-Math.PI / 2} position-y={0.01}>
-        <ringGeometry args={[RING.concourseInner, RING.concourseOuter, 128]} />
-        <meshStandardMaterial color="#d3dcd7" />
-      </mesh>
-      <mesh rotation-x={-Math.PI / 2} position-y={0.012}>
-        <circleGeometry args={[RING.atrium, 96]} />
-        <meshStandardMaterial color="#ffffff" />
-      </mesh>
-      {[0, 90, 180, 270].map((a) => (
-        <mesh key={a} rotation={[-Math.PI / 2, 0, (-a * Math.PI) / 180]} position={polar(a, (RING.concourseOuter + RING.gate) / 2, 0.011)}>
-          <planeGeometry args={[0.55, RING.gate - RING.concourseOuter]} />
-          <meshStandardMaterial color="#d3dcd7" />
-        </mesh>
-      ))}
-      <Text font={FONT_BOLD} position={[0, 0.03, -0.25]} rotation-x={-Math.PI / 2} fontSize={0.42} color="#20302b">
-        GROUND FLOOR
-      </Text>
-      <Text font={FONT} position={[0, 0.03, 0.35]} rotation-x={-Math.PI / 2} fontSize={0.17} color="#5d6d67" maxWidth={3.6} textAlign="center">
-        Follow the circular concourse
-      </Text>
-    </group>
-  );
-}
-
 function Booth({ place, focused, dimmed, onSelect }: { place: Place; focused: boolean; dimmed: boolean; onSelect: (id: string) => void }) {
-  const s = place.shape!;
-  const geometry = useSectorGeometry(s);
+  const polys = polygonsOf(place);
+  const area = useMemo(() => areaOf(polys), [polys]);
+  const h = heightOf(place, area);
+  const geometry = useMemo(() => {
+    const g = new THREE.ExtrudeGeometry(shapesOf(polys), { depth: h, bevelEnabled: false });
+    g.rotateX(-Math.PI / 2);
+    return g;
+  }, [polys, h]);
   const ref = useRef<THREE.Group>(null);
   const { hovered, handlers } = usePointer(onSelect, place.id);
   const base = CATEGORIES[place.category].color;
   const color = useMemo(() => {
     const c = new THREE.Color(base);
-    if (dimmed) c.lerp(new THREE.Color("#f2f4f3"), 0.6);
+    if (dimmed) c.lerp(new THREE.Color("#eef1ef"), 0.65);
     if (hovered) c.offsetHSL(0, 0, 0.08);
     return c;
   }, [base, dimmed, hovered]);
 
   useFrame((state, dt) => {
     if (!ref.current) return;
-    const lift = focused ? 0.18 + Math.sin(state.clock.elapsedTime * 3) * 0.05 : 0;
+    const lift = focused ? 1.2 + Math.sin(state.clock.elapsedTime * 3) * 0.35 : 0;
     ref.current.position.y = THREE.MathUtils.damp(ref.current.position.y, lift, 8, dt);
   });
 
-  const h = s.h ?? 0.4;
-  const angle = (s.a0 + s.a1) / 2;
-  const rMid = (s.r0 + s.r1) / 2;
-  const arc = ((s.a1 - s.a0) * Math.PI * rMid) / 180;
-  const isStall = s.r1 - s.r0 < 1;
-  const text = isStall ? place.code ?? place.name : place.code ? `${place.code}\n${place.name}` : place.name;
-  const size = isStall ? 0.16 : arc < 2.2 ? 0.17 : 0.26;
+  const centre = placePoint(place);
+  const angle = bearing(centre);
+  const shared = sharedName(place);
+  const small = area < 14;
+  const text = place.category === "amenity" ? "WC" : small ? place.code ?? place.name : shared ?? (place.code && !place.code.includes("–") ? `${place.code}\n${place.name}` : place.name);
+  const size = THREE.MathUtils.clamp(Math.sqrt(area) * (small ? 0.24 : 0.13), 0.45, 3.2);
+  const flip = angle > 90 && angle < 270;
 
   return (
     <group ref={ref}>
       <mesh geometry={geometry} {...handlers}>
-        <meshStandardMaterial color={color} emissive={focused ? base : "#000000"} emissiveIntensity={focused ? 0.35 : 0} roughness={0.7} />
+        <meshStandardMaterial color={color} emissive={focused ? base : "#000000"} emissiveIntensity={focused ? 0.35 : 0} roughness={0.75} />
       </mesh>
-      <FlatLabel angle={angle} r={rMid} y={h + 0.01} size={size} maxWidth={isStall ? undefined : arc * 0.85} bold={!isStall}>
-        {text}
-      </FlatLabel>
+      {!dimmed || focused ? (
+        <group position={[centre[0], h + 0.05, centre[1]]} rotation={[0, (-angle * Math.PI) / 180, 0]}>
+          <Text
+            font={small ? FONT : FONT_BOLD}
+            rotation={[-Math.PI / 2, 0, flip ? Math.PI : 0]}
+            fontSize={size}
+            maxWidth={Math.sqrt(area) * 1.1}
+            textAlign="center"
+            anchorX="center"
+            anchorY="middle"
+            lineHeight={1.1}
+            color={labelInk(base)}
+          >
+            {text}
+          </Text>
+        </group>
+      ) : null}
     </group>
   );
 }
 
 function Gate({ place, focused, onSelect }: { place: Place; focused: boolean; onSelect: (id: string) => void }) {
-  const { angle, r } = place.anchor!;
+  const angle = bearing(place.point!);
+  const [x, z] = fromPolar(angle, 76);
   const { hovered, handlers } = usePointer(onSelect, place.id);
   const color = new THREE.Color(CATEGORIES[place.category].color);
   if (hovered) color.offsetHSL(0, 0, 0.08);
   const flip = angle > 90 && angle < 270;
+  const ink = labelInk(CATEGORIES[place.category].color);
   return (
-    <group position={polar(angle, r)} rotation={[0, (-angle * Math.PI) / 180, 0]}>
-      <mesh position-y={0.25} {...handlers}>
-        <boxGeometry args={[2.2, 0.5, 0.7]} />
+    <group position={[x, 0, z]} rotation={[0, (-angle * Math.PI) / 180, 0]}>
+      <mesh position-y={1.5} {...handlers}>
+        <boxGeometry args={[22, 3, 7]} />
         <meshStandardMaterial color={color} emissive={focused ? color : "#000"} emissiveIntensity={focused ? 0.3 : 0} />
       </mesh>
-      <group position-y={0.51} rotation={[-Math.PI / 2, 0, flip ? Math.PI : 0]}>
-        <Text font={FONT_BOLD} fontSize={0.2} position-y={0.09} color="#fff" anchorX="center" anchorY="middle">
+      <group position-y={3.05} rotation={[-Math.PI / 2, 0, flip ? Math.PI : 0]}>
+        <Text font={FONT_BOLD} fontSize={2.4} position-y={0.9} color={ink} anchorX="center" anchorY="middle">
           {place.code!.toUpperCase()}
         </Text>
-        <Text font={FONT} fontSize={0.11} position-y={-0.14} maxWidth={2} textAlign="center" color="#fff" anchorX="center" anchorY="middle">
+        <Text font={FONT} fontSize={1.15} position-y={-1.5} maxWidth={20} textAlign="center" color={ink} anchorX="center" anchorY="middle">
           {place.name.toUpperCase()}
         </Text>
       </group>
@@ -238,23 +349,23 @@ function Gate({ place, focused, onSelect }: { place: Place; focused: boolean; on
 function BasketballCourt({ focused, onSelect }: { focused: boolean; onSelect: (id: string) => void }) {
   const p = getPlace("basketball-court")!;
   const { hovered, handlers } = usePointer(onSelect, p.id);
-  const pos = polar(p.anchor!.angle, p.anchor!.r);
-  const line = "#ffffff";
-  const w = 2.4;
-  const d = 1.5;
+  const [x, y] = p.point!;
+  const w = 15;
+  const d = 28;
+  const l = (pts: [number, number][]) => pts.map(([a, b]) => [a, 0.45, b] as Vec3);
   return (
-    <group position={pos}>
-      <mesh position-y={0.04} {...handlers}>
-        <boxGeometry args={[w, 0.08, d]} />
-        <meshStandardMaterial color={hovered ? "#6f9e49" : CATEGORIES.outdoor.color} emissive={focused ? CATEGORIES.outdoor.color : "#000"} emissiveIntensity={focused ? 0.35 : 0} />
+    <group position={[x, 0, y]}>
+      <mesh position-y={0.2} {...handlers}>
+        <boxGeometry args={[w, 0.4, d]} />
+        <meshStandardMaterial color={hovered ? "#4a8ee0" : CATEGORIES.venue.color} emissive={focused ? CATEGORIES.venue.color : "#000"} emissiveIntensity={focused ? 0.35 : 0} />
       </mesh>
-      <Line points={[[-w / 2 + 0.1, 0.09, -d / 2 + 0.1], [w / 2 - 0.1, 0.09, -d / 2 + 0.1], [w / 2 - 0.1, 0.09, d / 2 - 0.1], [-w / 2 + 0.1, 0.09, d / 2 - 0.1], [-w / 2 + 0.1, 0.09, -d / 2 + 0.1]]} color={line} lineWidth={1.5} />
-      <Line points={[[0, 0.09, -d / 2 + 0.1], [0, 0.09, d / 2 - 0.1]]} color={line} lineWidth={1.5} />
-      <mesh rotation-x={-Math.PI / 2} position-y={0.09}>
-        <ringGeometry args={[0.2, 0.23, 32]} />
-        <meshBasicMaterial color={line} />
+      <Line points={l([[-w / 2 + 0.6, -d / 2 + 0.6], [w / 2 - 0.6, -d / 2 + 0.6], [w / 2 - 0.6, d / 2 - 0.6], [-w / 2 + 0.6, d / 2 - 0.6], [-w / 2 + 0.6, -d / 2 + 0.6]])} color="#fff" lineWidth={1.5} />
+      <Line points={l([[-w / 2 + 0.6, 0], [w / 2 - 0.6, 0]])} color="#fff" lineWidth={1.5} />
+      <mesh rotation-x={-Math.PI / 2} position-y={0.45}>
+        <ringGeometry args={[1.7, 1.9, 40]} />
+        <meshBasicMaterial color="#fff" />
       </mesh>
-      <Text font={FONT_BOLD} position={[0, 0.1, d / 2 + 0.25]} rotation-x={-Math.PI / 2} fontSize={0.2} color="#3d5a26">
+      <Text font={FONT_BOLD} position={[w / 2 + 2.2, 0.5, 0]} rotation={[-Math.PI / 2, 0, Math.PI / 2]} fontSize={2} color="#1f2d29">
         BASKETBALL COURT
       </Text>
     </group>
@@ -267,95 +378,71 @@ function FoodHub({ focused, onSelect }: { focused: boolean; onSelect: (id: strin
   const color = new THREE.Color(CATEGORIES.food.color);
   if (hovered) color.offsetHSL(0, 0, 0.08);
   return (
-    <group position={polar(p.anchor!.angle, p.anchor!.r)}>
-      <mesh position-y={0.3} {...handlers}>
-        <boxGeometry args={[2.2, 0.6, 1.1]} />
+    <group position={[p.point![0], 0, p.point![1]]}>
+      <mesh position-y={1.6} {...handlers}>
+        <boxGeometry args={[22, 3.2, 11]} />
         <meshStandardMaterial color={color} emissive={focused ? color : "#000"} emissiveIntensity={focused ? 0.3 : 0} />
       </mesh>
-      <Text font={FONT_BOLD} position={[0, 0.61, 0]} rotation-x={-Math.PI / 2} fontSize={0.24} color="#fff">
+      <Text font={FONT_BOLD} position={[0, 3.25, 0]} rotation-x={-Math.PI / 2} fontSize={2.6} color={labelInk(CATEGORIES.food.color)}>
         FOOD HUB
       </Text>
     </group>
   );
 }
 
-function Core({ height }: { height: number }) {
-  const p = getPlace("core")!;
-  const [x, , z] = polar(p.anchor!.angle, p.anchor!.r);
-  return (
-    <group position={[x, 0, z]}>
-      <mesh position-y={height / 2}>
-        <cylinderGeometry args={[0.22, 0.22, height, 24]} />
-        <meshStandardMaterial color="#4b5a55" transparent opacity={0.85} />
-      </mesh>
-      <Html position={[0, height + 0.25, 0]} center distanceFactor={14} zIndexRange={[10, 0]}>
-        <div className="pointer-events-none whitespace-nowrap rounded-md bg-[#2f3b37] px-2 py-1 text-[11px] font-semibold text-white shadow">Stairs & lifts (TBC)</div>
-      </Html>
-    </group>
-  );
-}
-
-function UpperFloors({ highlight }: { highlight: (number | null)[] }) {
+function Lifts({ showLabels }: { showLabels: boolean }) {
   return (
     <group>
-      {FLOORS.filter((f) => f.level > 0).map((f) => {
-        const active = highlight.includes(f.level);
-        const y = f.level * FLOOR_GAP;
-        return (
-          <group key={f.id} position-y={y}>
-            <mesh rotation-x={-Math.PI / 2}>
-              <ringGeometry args={[RING.concourseInner, 6.6, 96]} />
-              <meshBasicMaterial color={active ? "#e8451e" : "#7f8f89"} transparent opacity={active ? 0.1 : 0.04} depthWrite={false} side={THREE.DoubleSide} />
-            </mesh>
-            <Line points={ringOutline(6.6)} color={active ? "#e8451e" : "#9aa8a3"} lineWidth={active ? 2.5 : 1} transparent opacity={active ? 0.9 : 0.5} />
-            <Line points={ringOutline(RING.concourseInner)} color={active ? "#e8451e" : "#9aa8a3"} lineWidth={active ? 2 : 1} transparent opacity={active ? 0.7 : 0.4} />
-            <Html position={polar(20, 6.9)} center distanceFactor={16} zIndexRange={[10, 0]}>
-              <div className={`pointer-events-none whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-semibold shadow ${active ? "bg-[#e8451e] text-white" : "bg-white/85 text-[#3a4743]"}`}>{f.name}</div>
-            </Html>
-          </group>
-        );
-      })}
+      {LIFTS.map(([x, y], i) => (
+        <mesh key={i} position={[x, 1.6, y]} rotation-y={(-bearing([x, y]) * Math.PI) / 180}>
+          <boxGeometry args={[4.6, 3.2, 3.4]} />
+          <meshStandardMaterial color="#4b5a55" transparent opacity={0.85} />
+        </mesh>
+      ))}
+      {showLabels &&
+        CORES.map((c) => (
+          <Html key={c.id} position={[c.point[0], 5, c.point[1]]} center zIndexRange={[10, 0]}>
+            <div className="pointer-events-none whitespace-nowrap rounded-md bg-[#2f3b37]/90 px-1.5 py-0.5 text-[11px] font-semibold text-white shadow">{c.name}</div>
+          </Html>
+        ))}
     </group>
   );
 }
 
-function ringOutline(r: number): Vec3[] {
-  return Array.from({ length: 97 }, (_, i) => polar((i * 360) / 96, r));
-}
+// ---------------------------------------------------------------- route
 
 function RoutePath({ points }: { points: Vec3[] }) {
   const lineRef = useRef<{ material: { dashOffset: number } } | null>(null);
   const walker = useRef<THREE.Mesh>(null);
+  const lifted = useMemo(() => points.map(([x, y, z]) => [x, y + 0.6, z] as Vec3), [points]);
   const { cumulative, total } = useMemo(() => {
     const cumulative = [0];
-    for (let i = 1; i < points.length; i++) {
-      const [ax, ay, az] = points[i - 1];
-      const [bx, by, bz] = points[i];
+    for (let i = 1; i < lifted.length; i++) {
+      const [ax, ay, az] = lifted[i - 1];
+      const [bx, by, bz] = lifted[i];
       cumulative.push(cumulative[i - 1] + Math.hypot(bx - ax, by - ay, bz - az));
     }
     return { cumulative, total: cumulative[cumulative.length - 1] };
-  }, [points]);
+  }, [lifted]);
 
   useFrame((state, dt) => {
-    if (lineRef.current) lineRef.current.material.dashOffset -= dt * 1.2;
+    if (lineRef.current) lineRef.current.material.dashOffset -= dt * 8;
     if (!walker.current || total === 0) return;
-    const d = ((state.clock.elapsedTime * 2.2) % (total + 1.5)) - 0;
-    const t = Math.min(d, total);
+    const t = Math.min((state.clock.elapsedTime * 22) % (total + 20), total);
     let i = 1;
     while (i < cumulative.length - 1 && cumulative[i] < t) i++;
-    const seg = cumulative[i] - cumulative[i - 1] || 1;
-    const k = (t - cumulative[i - 1]) / seg;
-    const a = points[i - 1];
-    const b = points[i];
-    walker.current.position.set(a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k + 0.12, a[2] + (b[2] - a[2]) * k);
+    const k = (t - cumulative[i - 1]) / (cumulative[i] - cumulative[i - 1] || 1);
+    const a = lifted[i - 1];
+    const b = lifted[i];
+    walker.current.position.set(a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k + 0.8, a[2] + (b[2] - a[2]) * k);
   });
 
   return (
     <group>
-      <Line points={points} color="#ffffff" lineWidth={9} transparent opacity={0.9} />
-      <Line ref={lineRef as never} points={points} color={ROUTE_COLOR} lineWidth={5} dashed dashSize={0.35} gapSize={0.18} />
+      <Line points={lifted} color="#ffffff" lineWidth={10} transparent opacity={0.9} />
+      <Line ref={lineRef as never} points={lifted} color={ROUTE_COLOR} lineWidth={5} dashed dashSize={3} gapSize={1.6} />
       <mesh ref={walker}>
-        <sphereGeometry args={[0.13, 24, 24]} />
+        <sphereGeometry args={[1.3, 24, 24]} />
         <meshStandardMaterial color={ROUTE_COLOR} emissive={ROUTE_COLOR} emissiveIntensity={0.5} />
       </mesh>
     </group>
@@ -366,15 +453,15 @@ function Marker({ position, label, tone }: { position: Vec3; label: string; tone
   const color = tone === "start" ? "#1f2d29" : ROUTE_COLOR;
   return (
     <group position={position}>
-      <mesh rotation-x={Math.PI} position-y={0.32}>
-        <coneGeometry args={[0.17, 0.55, 20]} />
+      <mesh rotation-x={Math.PI} position-y={2.6}>
+        <coneGeometry args={[1.4, 4.4, 20]} />
         <meshStandardMaterial color={color} />
       </mesh>
-      <mesh position-y={0.66}>
-        <sphereGeometry args={[0.2, 24, 24]} />
+      <mesh position-y={5.6}>
+        <sphereGeometry args={[1.8, 24, 24]} />
         <meshStandardMaterial color={color} />
       </mesh>
-      <Html position={[0, 1.2, 0]} center zIndexRange={[20, 10]}>
+      <Html position={[0, 9.5, 0]} center zIndexRange={[20, 10]}>
         <div className="pointer-events-none whitespace-nowrap rounded-lg px-2.5 py-1 text-xs font-semibold text-white shadow-lg" style={{ background: color }}>
           {label}
         </div>
@@ -383,38 +470,40 @@ function Marker({ position, label, tone }: { position: Vec3; label: string; tone
   );
 }
 
-function CameraRig({ view, route }: { view: ViewMode; route: Route | null }) {
+// ---------------------------------------------------------------- camera
+
+function CameraRig({ view, route, floor, stacked }: { view: ViewMode; route: Route | null; floor: FloorId; stacked: boolean }) {
   const ref = useRef<CameraControls>(null);
 
   useEffect(() => {
     const c = ref.current;
     if (!c) return;
-    if (view === "2d") {
-      c.minPolarAngle = 0;
-      c.maxPolarAngle = 0;
-    } else {
-      c.minPolarAngle = 0;
-      c.maxPolarAngle = Math.PI * 0.42;
-    }
+    c.minPolarAngle = 0;
+    c.maxPolarAngle = view === "2d" ? 0 : Math.PI * 0.42;
   }, [view]);
 
   useEffect(() => {
     const c = ref.current;
     if (!c) return;
-    if (route && route.points.length > 1) {
-      const box = new THREE.Box3().setFromPoints(route.points.map((p) => new THREE.Vector3(...p)));
-      const sphere = box.getBoundingSphere(new THREE.Sphere());
-      sphere.radius = Math.max(sphere.radius + 1.2, 3.5);
-      const dist = sphere.radius * 2.6;
-      const [cx, cy, cz] = sphere.center.toArray();
-      if (view === "2d") c.setLookAt(cx, cy + dist * 1.2, cz + 0.001, cx, cy, cz, true);
-      else c.setLookAt(cx, cy + dist * 0.85, cz + dist * 0.75, cx, cy, cz, true);
-    } else if (view === "2d") {
-      c.setLookAt(0, 24, 0.001, 0, 0, 0, true);
+    let centre: THREE.Vector3;
+    let r: number;
+    // Frame the route unless the visitor picked another floor (or the stack) to look at.
+    if (route && route.points.length > 1 && !stacked && route.floors.includes(floor)) {
+      const sphere = new THREE.Box3().setFromPoints(route.points.map((p) => new THREE.Vector3(...p))).getBoundingSphere(new THREE.Sphere());
+      centre = sphere.center;
+      r = Math.max(sphere.radius + (route.floors.length > 1 ? 34 : 18), 40);
+    } else if (stacked) {
+      centre = new THREE.Vector3(0, (FLOORS.length - 1) * FLOOR_GAP * 0.5, 0);
+      r = 120;
     } else {
-      c.setLookAt(0, 13, 11, 0, 0, 0, true);
+      centre = new THREE.Vector3(0, floorById(floor).level * FLOOR_GAP, 0);
+      r = 95;
     }
-  }, [route, view]);
+    const d = r * 2.3;
+    const [x, y, z] = centre.toArray();
+    if (view === "2d") c.setLookAt(x, y + d * 1.15, z + 0.01, x, y, z, true);
+    else c.setLookAt(x, y + d * 0.8, z + d * 0.72, x, y, z, true);
+  }, [route, view, floor, stacked]);
 
-  return <CameraControls ref={ref} makeDefault minDistance={3} maxDistance={40} dollySpeed={0.6} />;
+  return <CameraControls ref={ref} makeDefault minDistance={12} maxDistance={600} dollySpeed={0.6} />;
 }

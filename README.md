@@ -1,6 +1,6 @@
 # CANEX · Find Your Way
 
-Interactive 3D wayfinding for CANEX at the Wole Soyinka Centre for Culture and Creative Arts.
+Interactive 3D wayfinding for CANEX 2026 at the Wole Soyinka Centre for Culture and Creative Arts.
 Built with Next.js 16, React Three Fiber and drei.
 
 ## Run
@@ -8,30 +8,39 @@ Built with Next.js 16, React Three Fiber and drei.
 ```bash
 npm install
 npm run dev        # http://localhost:3000
+npm test           # data, search and routing tests (incl. every start/destination pair)
 npm run build && npm start
 ```
 
 ## What it does
 
-- 3D (and top-down 2D) map of the ground floor ring: every booth, hall, stage and gate from venue plan V24.1.
-- Search across all 128 places on every floor, with floor and category filters.
-- Step-by-step walking directions along the circular concourse (shorter direction, left/right turns, landmarks passed, rough distance and time), with an animated route on the map.
-- Upper floors are shown as stacked levels. Routes go via the stairs/lifts.
+- A 3D (or top-down 2D) model of every floor, traced from the V24 power-layout plans: the architecture as a backdrop, with each booth extruded from its real footprint.
+- Floor switcher, plus an exploded view of the whole building.
+- Search across ~145 places on six levels, with floor and category filters.
+- Turn-by-turn walking directions: shortest path along the concourse, through wing doors and up the nearest lifts, with left/right turns, landmarks passed, distance and time, drawn as an animated route.
+- "Nearest toilets" and "Nearest food & drink" from wherever you are.
+- Search understands booth codes (E21, HM05), names, and everyday words like "restroom" or "coffee". Enter goes to the top match.
+- Three map colours (exhibition, food & drink, hubs/stages/lounges), validated as colour-blind safe as a set; gates and toilets are neutral and always labelled. Labels pick white or dark ink by contrast.
+- Directions still work if a device can't show the 3D map.
 - Tap any booth on the map to route to it.
-- Shareable deep links: `/?from=gate-a&to=e21`. Print a QR code at each gate that links to `/?from=gate-a` and the visitor's start point is already set.
+- Shareable deep links: `/?from=gate-a&to=e21`. A QR code at each gate linking to `/?from=gate-a` pre-sets the start point.
 
-## Editing the venue
+## Where the data lives
 
-All venue data lives in `src/lib/venue.ts`.
+| What | Where |
+|---|---|
+| Names, codes, categories, notes | `src/lib/venue.ts` |
+| Booth footprints (metres) | `src/data/footprints.json`, generated |
+| Floor backdrops | `public/plans/floor-*.webp`, generated |
+| Walking graph and directions | `src/lib/routing.ts` |
+| Extraction from the PDF | `tools/plan-extract/` (see its README) |
 
-- **Ground-floor positions** are polar: `angle` in degrees clockwise from Gate B (top of the plan), `r` in map units from the centre. Booths use `shape: { a0, a1, r0, r1 }` (an arc of the ring).
-- **Upper floors** list their occupants but have no layout yet, because the plan only provides lists. Add `shape`s once floor plans are available.
-- **Stairs & lifts** (`id: "core"`) are a placeholder by the main entrance. The plan doesn't show them. Update its `anchor` once confirmed.
+Coordinates are metres from the centre of the building: x towards Gate C, y towards Gate D.
 
-Routing lives in `src/lib/routing.ts`. `METERS_PER_UNIT` converts map units to metres. The plan is not to scale, so calibrate it by pacing out one known distance on site.
+## Known gaps
 
-## Known gaps in the source plan
-
-- EX09 Africa Union is listed in Exhibition 2 but not drawn. It routes to the middle of Exhibition 2 with a note.
-- Hosted Buyers, Press and Sponsor lounges sit under "Mezzanine, Second & Third" without a floor. They're filed under Third with a note.
-- Names marked `*` on the plan keep the source spelling.
+- **Mezzanine:** the event guide lists booths CC01–CC20, but the V24 plans have no mezzanine sheet. The app sends people to the lifts with a note.
+- **Outdoor:** the Basketball Court and Food Hub aren't on the floor plans. Their positions outside Gates A and B are approximate.
+- **Upper-floor corridors:** these are modelled as a ring just inside the lift lobbies. Routes prefer walking the ground concourse and taking the lifts nearest the destination.
+- **Master Class:** both rooms on the Fourth floor are labelled "Master Class B" on the plan. The southern one is listed as C, following the event guide.
+- **Draft plans:** the V24 drawings are marked draft. Re-run the extraction when the final plans arrive.
